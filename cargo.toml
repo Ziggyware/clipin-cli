@@ -1,0 +1,15 @@
+[package]
+name = "clipin"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+winapi = { version = "0.3", features = ["winuser", "shellapi", "winbase"] }
+glob = "0.3"
+atty = "0.2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+opt-level = 3
