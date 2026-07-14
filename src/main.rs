@@ -206,9 +206,15 @@ mod pathutil {
     use glob::glob;
     use std::path::Path;
 
-    // Mirror PS: Resolve-Path (glob) then literal fallback; absolute paths; sort -unique.
-    pub fn expand(patterns: &[String], recursive: bool) -> Vec<String> {
+    pub fn expand(patterns: &[String], recursive: bool, exts: &[String]) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
+        
+        let matches_ext = |p: &Path| -> bool {
+            if exts.is_empty() { return true; }
+            let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
+            exts.iter().any(|x| x.to_lowercase() == ext)
+        };
+
         for pat in patterns {
             let p = Path::new(pat);
             if p.is_dir() {
@@ -219,7 +225,7 @@ mod pathutil {
                 };
                 if let Ok(it) = glob(&g) {
                     for e in it.flatten() {
-                        if e.is_file() {
+                        if e.is_file() && matches_ext(&e) {
                             out.push(abs(&e));
                         }
                     }
@@ -227,15 +233,15 @@ mod pathutil {
             } else if let Ok(it) = glob(pat) {
                 let mut matched = false;
                 for e in it.flatten() {
-                    if e.is_file() {
+                    if e.is_file() && matches_ext(&e) {
                         out.push(abs(&e));
                         matched = true;
                     }
                 }
-                if !matched && p.is_file() {
+                if !matched && p.is_file() && matches_ext(p) {
                     out.push(abs(p)); // literal fallback
                 }
-            } else if p.is_file() {
+            } else if p.is_file() && matches_ext(p) {
                 out.push(abs(p));
             } else {
                 eprintln!("No files matched: {}", pat);
@@ -249,7 +255,6 @@ mod pathutil {
     fn abs(p: &Path) -> String {
         std::fs::canonicalize(p)
             .map(|c| {
-                // strip \\?\ verbatim prefix Windows canonicalize adds
                 let s = c.to_string_lossy().to_string();
                 s.strip_prefix(r"\\?\").map(|x| x.to_string()).unwrap_or(s)
             })
@@ -265,7 +270,6 @@ mod bundle {
         pub content: String,
     }
 
-    // Exact port of ConvertTo-LlmBundle
     pub fn to_llm(files: &[Rec], fence: &str) -> String {
         let mut s = String::new();
         for f in files {
@@ -299,11 +303,13 @@ struct Cfg {
     trace: bool,
     help: bool,
     fence: String,
+    extensions: Vec<String>,
     paths: Vec<String>,
 }
 
 fn parse() -> Cfg {
     let mut c = Cfg {
+        as_llm: true, // Default mode is LLM now
         fence: "```".into(),
         ..Default::default()
     };
@@ -313,13 +319,20 @@ fn parse() -> Cfg {
             "--i" | "--image" => c.force_image = true,
             "--b" | "--b64" => c.as_b64 = true,
             "--d" | "--data" => c.as_data = true,
-            "--f" | "--file" | "--files" => c.as_filedrop = true,
+            "--f" | "--file" | "--files" => { c.as_filedrop = true; c.as_llm = false; },
+            "--raw" => c.as_llm = false, // explicit opt-out to fallback TEXT
             "--l" | "--llm" | "--tx" | "--text" => c.as_llm = true,
             "--r" | "--recursive" => c.recursive = true,
             "--t" | "--trace" => c.trace = true,
             "--h" | "--help" => c.help = true,
             s if s.starts_with("--fence:") => c.fence = s[8..].to_string(),
-            s if s.starts_with("--fmt:") => {} // format override: only affects image re-encode; raw bytes copied as-is here
+            s if s.starts_with("--ext=") => {
+                c.extensions.extend(s[6..].split(',').map(|x| x.trim().trim_start_matches('.').to_string()));
+            },
+            s if s.starts_with("-e=") => {
+                c.extensions.extend(s[3..].split(',').map(|x| x.trim().trim_start_matches('.').to_string()));
+            },
+            s if s.starts_with("--fmt:") => {} 
             s if s.starts_with("--") => {}
             s => c.paths.push(s.to_string()),
         }
@@ -346,10 +359,12 @@ const HELP: &str = r#"@clipin — Clipboard Input Utility
     --b --b64             Encode image as Base64 text
     --d --data            Encode image as HTML base64 data URI
     --f --file / --files  Copy as Explorer file-drop
-    --l --llm             Bundle file(s) with fenced-block markers
-    --r --recursive       Recursive
+    --l --llm             Bundle file(s) with fenced-block markers (DEFAULT)
+    --raw                 Use raw text mode (disable LLM bundle format)
+    --r --recursive       Recursive directory expansion
+    -e=.., --ext=..       Filter by multiple extensions (comma-separated, e.g., -e=rs,toml)
     --tx --text           Alias for --llm
-    --fmt:<ext>           Override output image format  (png | jpg | bmp | gif | tif)
+    --fmt:<ext>           Override output image format (png | jpg | bmp | gif | tif)
     --fence:<chars>       Fence marker series (default: ```)
 "#;
 
@@ -371,7 +386,7 @@ fn main() {
     tr(cfg.trace, "PARSE", &format!("paths: {:?}", cfg.paths));
 
     // -----------------------------------------------------------------------
-    // PIPED INPUT — PS enters this whenever piped lines exist, regardless of paths.
+    // PIPED INPUT
     // -----------------------------------------------------------------------
     let mut piped = String::new();
     let stdin_is_tty = atty::is(atty::Stream::Stdin);
@@ -407,7 +422,7 @@ fn main() {
     // -----------------------------------------------------------------------
     // RESOLVE PATHS
     // -----------------------------------------------------------------------
-    let files = pathutil::expand(&cfg.paths, cfg.recursive);
+    let files = pathutil::expand(&cfg.paths, cfg.recursive, &cfg.extensions);
     let count = files.len();
     tr(cfg.trace, "RESOLVE", &format!("{} file(s)", count));
 
@@ -417,8 +432,6 @@ fn main() {
     if cfg.as_filedrop {
         let mut list: Vec<String> = files.clone();
         if cfg.append {
-            // PS reads existing file-drop and PREPENDS. winapi read of HDROP omitted
-            // (rare path); clear only. Flagged divergence: append+filedrop drops prior items.
             clipboard::clear();
         }
         if let Err(e) = clipboard::set_file_drop(&list) {
@@ -433,7 +446,7 @@ fn main() {
         process::exit(0);
     }
 
-    // Capture existing clipboard text for append (PS: $clipList seed)
+    // Capture existing clipboard text for append
     let mut clip_seed = String::new();
     if cfg.append {
         clip_seed = clipboard::get_text().unwrap_or_default();
@@ -441,7 +454,8 @@ fn main() {
     }
 
     // -----------------------------------------------------------------------
-    // AUTO-PROMOTE multi-file → file-drop (unless --llm or --append)
+    // AUTO-PROMOTE multi-file → file-drop
+    // (Bypassed if as_llm is true, which is now the default)
     // -----------------------------------------------------------------------
     if count > 1 && !cfg.as_llm && !cfg.append {
         tr(cfg.trace, "AUTO", &format!("multi-file {} → file-drop", count));
@@ -454,7 +468,7 @@ fn main() {
     }
 
     // -----------------------------------------------------------------------
-    // LLM BUNDLE
+    // LLM BUNDLE (Now Default)
     // -----------------------------------------------------------------------
     if cfg.as_llm {
         let mut recs = Vec::new();
@@ -496,7 +510,7 @@ fn main() {
     }
 
     // -----------------------------------------------------------------------
-    // TEXT (multi-file or single) — default when no image flags
+    // TEXT (raw mode, opted into via --raw)
     // -----------------------------------------------------------------------
     if !cfg.as_b64 && !cfg.as_data && !cfg.force_image {
         let mut buf: Vec<String> = Vec::new();
@@ -527,7 +541,7 @@ fn main() {
         } else {
             eprintln!("Clipboard is empty.");
         }
-        process::exit(0); // PS: exit 0 in both branches
+        process::exit(0);
     }
 
     // -----------------------------------------------------------------------
@@ -574,8 +588,6 @@ fn main() {
         process::exit(0);
     }
 
-    // Raw image (no encoding flag): CF_DIB synthesis is ~120 lines of BITMAPINFOHEADER
-    // marshalling. Fallback: PowerShell SetImage for THIS case only. (F-raw, U=low.)
     let ps = format!(
         "Add-Type -AssemblyName System.Drawing,System.Windows.Forms; \
          $b=[System.Drawing.Image]::FromFile('{}'); \
