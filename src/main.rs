@@ -382,7 +382,10 @@ fn main() {
         print!("{}", HELP);
         process::exit(0);
     }
-
+    if cfg.paths.is_empty() {
+        print!("{}", HELP);
+        process::exit(0);
+    }
     tr(cfg.trace, "PARSE", &format!("paths: {:?}", cfg.paths));
 
     // -----------------------------------------------------------------------
