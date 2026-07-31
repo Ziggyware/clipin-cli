@@ -210,9 +210,9 @@ mod imgutil {
         const C: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
         let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
         for ch in data.chunks(3) {
-            let b0 = ch[0] as u32;
-            let b1 = if ch.len() > 1 { ch[1] as u32 } else { 0 };
-            let b2 = if ch.len() > 2 { ch[2] as u32 } else { 0 };
+            let b0 = if ch.len() > 0 { ch.get(0).copied().unwrap_or(0) as u32 } else { 0 };
+            let b1 = if ch.len() > 1 { ch.get(1).copied().unwrap_or(0) as u32 } else { 0 };
+            let b2 = if ch.len() > 2 { ch.get(2).copied().unwrap_or(0) as u32 } else { 0 };
             let n = (b0 << 16) | (b1 << 8) | b2;
             out.push(C[((n >> 18) & 63) as usize] as char);
             out.push(C[((n >> 12) & 63) as usize] as char);
