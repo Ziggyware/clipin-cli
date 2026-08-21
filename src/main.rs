@@ -551,6 +551,7 @@ struct Cfg {
     fmt_override: Option<String>,
     extensions: Vec<String>,
     paths: Vec<String>,
+    cwd: bool,
 }
 
 fn parse() -> Cfg {
@@ -571,6 +572,7 @@ fn parse() -> Cfg {
             "--r" | "--recursive" | "-r" => c.recursive = true,
             "--t" | "--trace" => c.trace = true,
             "--h" | "--help" => c.help = true,
+            "--cwd" => c.cwd = true,
             s if s.starts_with("--fence:") => c.fence = s[8..].to_string(),
             s if s.starts_with("--ext=") => {
                 c.extensions.extend(s[6..].split(',').map(|x| x.trim().trim_start_matches('.').to_string()));
@@ -640,6 +642,25 @@ fn get_relative_name(f: &str, current_dir: &Path) -> String {
 
 fn main() {
     let cfg = parse();
+if cfg.cwd {
+    let current_dir = env::current_dir().unwrap();
+    let s = current_dir.to_string_lossy().to_string();
+
+    if cfg.append {
+        let mut cur = clipboard::get_text().unwrap_or_default();
+        if !cur.is_empty() {
+            cur.push('\n');
+        }
+        cur.push_str(&s);
+        set_text_or_die(&cur);
+    } else {
+        set_text_or_die(&s);
+    }
+
+    println!("Current directory placed on clipboard.");
+    process::exit(0);
+}
+
 
     if cfg.help {
         print!("{}", HELP);
